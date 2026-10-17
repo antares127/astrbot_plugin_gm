@@ -23,6 +23,12 @@
         "hint": "关闭后修改群名成功不回复（失败仍提示）。推荐按群覆盖：/开关群名提示 on/off。",
         "default": true
     },
+    "group_notice_notice": {
+        "description": "发群公告成功后是否群内回执（#233）",
+        "type": "bool",
+        "hint": "关闭后 /发群公告 成功不再回复提示（失败仍提示）。推荐按群覆盖：/开关公告提示 on/off。",
+        "default": true
+    },
     "reject_re_add": {
         "description": "踢人后拒绝再次加群",
         "type": "bool",

@@ -1348,7 +1348,15 @@ class GroupAdminPlugin(Star):
             yield event.plain_result("已解除全群禁言" if ok else "解除失败")
 
     # #75: 禁我 [分钟] - 任意成员禁言自己
-    @filter.command("禁我", "禁言自己，格式：/禁我 [分钟]，默认10分钟")
+    # desc 同时作为 AstrBot AI 函数调用的工具提示词：需覆盖常见自然语言说法，
+    # 让用户说「把我禁言/禁言我/我想安静一会/自怼」时 AI 能准确选中本工具，
+    # 而不是走闲聊兜底回复无关内容。
+    @filter.command(
+        "禁我",
+        "禁言发送者自己（自我禁言/自怼）。当用户说『禁我、把我禁言、禁言我、"
+        "自我禁言、自怼、我想安静一会儿』等要求禁言其本人的意图时调用，"
+        "任意成员均可使用；格式：/禁我 [分钟]，默认10分钟，范围1~43200（30天）",
+    )
     async def mute_self_cmd(self, event: AstrMessageEvent, minutes: int = 10):
         raw = self._mp._get_raw_message(event)
         if not raw or not raw.get("group_id"):
@@ -1383,11 +1391,18 @@ class GroupAdminPlugin(Star):
             ok = await self._api._execute_action(event, "send_group_notice",
                                             group_id=group_id, content=content)
         if ok:
-            yield event.plain_result("群公告已发布")
+            # #233：成功回执受 group_notice_notice 控制（支持按群覆盖 /开关公告提示）
+            if self._store.get_group_setting(
+                    group_id, "group_notice_notice",
+                    self.config.get("group_notice_notice", True)):
+                yield event.plain_result("群公告已发布")
         else:
             # 退化为普通消息提示
             await self._api._send(event, [Plain(f"[群公告] {content}")])
-            yield event.plain_result("当前框架不支持发群公告，已以普通消息发送")
+            if self._store.get_group_setting(
+                    group_id, "group_notice_notice",
+                    self.config.get("group_notice_notice", True)):
+                yield event.plain_result("当前框架不支持发群公告，已以普通消息发送")
 
     # #29: 鞭尸禁言 + 发言排名
     @filter.command("鞭尸", "长期禁言被@的人（29天23小时59分）")
@@ -2106,6 +2121,12 @@ class GroupAdminPlugin(Star):
     @filter.command("开关群名提示", "开关修改群名结果回复（on/off，按群生效）")
     async def toggle_group_name_notice_cmd(self, event: AstrMessageEvent, value: str = ""):
         async for r in self._toggle_body(event, value, "group_name_notice", "群名提示"):
+            yield r
+
+    # #233：发群公告结果回执开关（全局默认 + 按群覆盖）
+    @filter.command("开关公告提示", "开关发群公告结果回复（on/off，按群生效）")
+    async def toggle_group_notice_notice_cmd(self, event: AstrMessageEvent, value: str = ""):
+        async for r in self._toggle_body(event, value, "group_notice_notice", "公告提示"):
             yield r
 
     @filter.command("开关踢人拒加", "开关踢人后拒绝重新加群（on/off，按群生效）")

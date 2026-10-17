@@ -63,6 +63,21 @@ class JoinReviewService:
     async def _handle_group_increase_notice(self, event, raw: dict):
         """入群欢迎（原 on_group_event 的 notice.group_increase 分支）。"""
         group_id = str(raw.get("group_id"))
+        # #271：用户已实际入群，清理其可能残留的待处理申请，
+        # 避免「已入群却仍显示新人申请 / 待处理列表残留」
+        new_uid = str(raw.get("user_id", ""))
+        if new_uid:
+            pending = self._store.runtime_map("pending_join_requests")
+            stale_keys = [
+                k for k, v in pending.items()
+                if isinstance(v, dict)
+                and str(v.get("group_id")) == group_id
+                and str(v.get("user_id")) == new_uid
+            ]
+            for k in stale_keys:
+                del pending[k]
+            if stale_keys:
+                self._store.save_config()
         welcome_conf = self._store.runtime_map("groups").get(group_id, {})
         if welcome_conf.get("welcome_enabled", False):
             welcome = welcome_conf.get("welcome_message", "欢迎 {at} 加入本群！")
@@ -75,6 +90,16 @@ class JoinReviewService:
         #229：在违禁词判定之前新增「加群自动拒绝关键词」判定
         （join_reject_keywords：本群覆盖优先、否则用全局列表）——命中即自动拒绝
         并把申请人加入本群黑名单，此后其再次申请直接命中黑名单分支。
+
+        #270/#271：区分 sub_type=add/invite——
+        - 标准 OneBot 的 invite 表示「bot 被邀请入群」，发起人 user_id=邀请人，
+          维持旧流程；
+        - 部分协议端扩展的「A 邀请/直接拉入 B」事件中 user_id 是邀请人 A，
+          被邀请人 B 取自 target_id/invited_user_id/invitee_id 扩展字段，
+          审核对象与通知一律以 B 为准，邀请人仅作展示，避免把邀请人当申请人、
+          甚至误拉黑邀请人；
+        - 审核前复核被邀请人/申请人是否已是群成员（管理员直接拉入的场景），
+          已入群则跳过审核与通知并清理残留待处理记录。
         """
         group_id = str(raw.get("group_id"))
         user_id = str(raw.get("user_id"))
@@ -82,10 +107,46 @@ class JoinReviewService:
         comment = raw.get("comment", "")
         # #252：sub_type 用申请事件原值（add/invite），部分实现要求与 flag 匹配
         sub_type = str(raw.get("sub_type") or "add")
+
+        # #270：解析邀请场景下的真实申请人（被邀请人）
+        self_id = str(self._api._get_self_id(event, raw) or "")
+        inviter_id = ""
+        applicant_id = user_id
+        third_party_invite = False
+        if sub_type == "invite":
+            invitee = str(raw.get("target_id") or raw.get("invited_user_id")
+                          or raw.get("invitee_id") or "")
+            if invitee and invitee != self_id:
+                # 协议端扩展：A 邀请/拉入 B（非 bot 自身）
+                third_party_invite = True
+                applicant_id = invitee
+                inviter_id = user_id
+            # invitee 为空或等于 self_id：标准语义「bot 被邀请入群」，
+            # 发起人即邀请人，沿用旧流程
+
         # #155：审核总开关关闭后，全部自动审核逻辑都跳过
         audit_enabled = bool(self._store.get_group_setting(group_id, "join_audit_enabled", True))
         if not audit_enabled:
             return
+
+        # #271：审核对象已是群成员（管理员直接拉入 / 申请已被处理）→
+        # 不再审批、不再发「新人加群」通知，并清理残留待处理记录。
+        # 标准「bot 被邀请入群」时发起人本身就是群成员，该场景跳过复核。
+        skip_member_check = (sub_type == "invite" and not third_party_invite)
+        if not skip_member_check and await self._api._is_group_member(event, group_id, applicant_id):
+            logger.info(f"[加群审核] 用户 {applicant_id} 已是群 {group_id} 成员"
+                        f"（疑似管理员直接拉入），跳过审核与群内通知")
+            pending = self._store.runtime_map("pending_join_requests")
+            stale_keys = [k for k, v in pending.items()
+                          if isinstance(v, dict)
+                          and str(v.get("group_id")) == group_id
+                          and str(v.get("user_id")) == applicant_id]
+            for k in stale_keys:
+                del pending[k]
+            if stale_keys:
+                self._store.save_config()
+            return
+
         enabled_groups = self._store.get_group_setting(group_id, "enabled_groups", [])
         violation_keywords = self._store.get_group_setting(group_id, "violation_keywords", [])
         join_approve_keywords = self._store.get_group_setting(group_id, "join_approve_keywords", [])
@@ -105,17 +166,20 @@ class JoinReviewService:
                        or group_id in [str(x) for x in enabled_groups])
 
         # #194：黑名单用户直接拒绝（无需检查关键词/门禁）
+        # #270：invite 场景黑名单针对被邀请人 B，不针对邀请人 A
         bl_list = self._store.get_group_setting(group_id, "blacklisted_users", [])
-        if bl_list and str(user_id) in [str(x) for x in bl_list]:
+        if bl_list and str(applicant_id) in [str(x) for x in bl_list]:
             handled = await self._api._handle_group_request(
                 event, flag, False, "黑名单用户", sub_type=sub_type)
             yield event.plain_result(
-                f"已拒绝 {user_id} 的加群申请（黑名单用户）" if handled else
-                f"拒绝 {user_id} 的加群申请失败（协议端拒绝或接口不可用，详见日志）")
+                f"已拒绝 {applicant_id} 的加群申请（黑名单用户）" if handled else
+                f"拒绝 {applicant_id} 的加群申请失败（协议端拒绝或接口不可用，详见日志）")
             if not handled:
                 return
+            invite_note = f"邀请人QQ: {inviter_id}\n" if third_party_invite else ""
             await self._api._notify_admins(
-                f"[加群请求] 已拒绝 {user_id}（群 {group_id}）\n"
+                f"[加群请求] 已拒绝 {applicant_id}（群 {group_id}）\n"
+                f"{invite_note}"
                 f"验证消息: {comment}\n"
                 f"原因: 黑名单用户",
                 group_id=group_id,
@@ -137,20 +201,23 @@ class JoinReviewService:
                     break
         if hit_keyword is not None:
             # 先落黑名单再拒绝：即便协议端拒绝失败（如 flag 过期），后续申请也会被黑名单拦住
+            # #270：拉黑对象是申请人/被邀请人 B，不能误写邀请人 A
             bl = self._store.get_group_override_list(group_id, "blacklisted_users")
-            if str(user_id) not in [str(x) for x in bl]:
-                bl.append(str(user_id))
+            if str(applicant_id) not in [str(x) for x in bl]:
+                bl.append(str(applicant_id))
                 self._store.save_config()
             detail_reason = f"您的加群申请含有本群禁止的词语，自动拒绝（{reject_reason}）"
             handled = await self._api._handle_group_request(
                 event, flag, False, detail_reason, sub_type=sub_type)
             yield event.plain_result(
-                f"已拒绝 {user_id} 的加群申请（命中自动拒绝关键词「{hit_keyword}」，已加入本群黑名单）" if handled else
-                f"拒绝 {user_id} 的加群申请失败（协议端拒绝或接口不可用，详见日志；该用户已加入本群黑名单）")
+                f"已拒绝 {applicant_id} 的加群申请（命中自动拒绝关键词「{hit_keyword}」，已加入本群黑名单）" if handled else
+                f"拒绝 {applicant_id} 的加群申请失败（协议端拒绝或接口不可用，详见日志；该用户已加入本群黑名单）")
             if not handled:
                 return
+            invite_note = f"邀请人QQ: {inviter_id}\n" if third_party_invite else ""
             await self._api._notify_admins(
-                f"[加群请求] 已拒绝 {user_id}（群 {group_id}）\n"
+                f"[加群请求] 已拒绝 {applicant_id}（群 {group_id}）\n"
+                f"{invite_note}"
                 f"验证消息: {comment}\n"
                 f"原因: 命中加群自动拒绝关键词「{hit_keyword}」，已加入本群黑名单",
                 group_id=group_id,
@@ -163,12 +230,14 @@ class JoinReviewService:
             handled = await self._api._handle_group_request(
                 event, flag, False, detail_reason, sub_type=sub_type)
             yield event.plain_result(
-                f"已拒绝 {user_id} 的加群申请（含违禁词）" if handled else
-                f"拒绝 {user_id} 的加群申请失败（协议端拒绝或接口不可用，详见日志）")
+                f"已拒绝 {applicant_id} 的加群申请（含违禁词）" if handled else
+                f"拒绝 {applicant_id} 的加群申请失败（协议端拒绝或接口不可用，详见日志）")
             if not handled:
                 return
+            invite_note = f"邀请人QQ: {inviter_id}\n" if third_party_invite else ""
             await self._api._notify_admins(
-                f"[加群请求] 已拒绝 {user_id}（群 {group_id}）\n"
+                f"[加群请求] 已拒绝 {applicant_id}（群 {group_id}）\n"
+                f"{invite_note}"
                 f"验证消息: {comment}\n"
                 f"原因: 命中违禁词",
                 group_id=group_id,
@@ -180,14 +249,16 @@ class JoinReviewService:
             handled = await self._api._handle_group_request(
                 event, flag, True, "命中关键词自动同意", sub_type=sub_type)
             yield event.plain_result(
-                f"已同意 {user_id} 的加群申请（命中关键词）" if handled else
-                f"同意 {user_id} 的加群申请失败（协议端拒绝或接口不可用，详见日志）")
+                f"已同意 {applicant_id} 的加群申请（命中关键词）" if handled else
+                f"同意 {applicant_id} 的加群申请失败（协议端拒绝或接口不可用，详见日志）")
             if not handled:
                 return
             # #229：原 join_request_notify_enabled（#205）全局开关已随配置去重移除，
             # 通知改为始终发送；需要彻底静音时把 join_notify_admins 留空即可
+            invite_note = f"邀请人QQ: {inviter_id}\n" if third_party_invite else ""
             await self._api._notify_admins(
-                f"[加群请求] 已同意 {user_id}（群 {group_id}）\n"
+                f"[加群请求] 已同意 {applicant_id}（群 {group_id}）\n"
+                f"{invite_note}"
                 f"验证消息: {comment}\n"
                 f"原因: 命中关键词",
                 group_id=group_id,
@@ -201,15 +272,25 @@ class JoinReviewService:
 
         # 群内提醒（#57）：发送申请消息到对应群聊，等待管理员引用回复同意/拒绝
         if self._store.get_group_setting(group_id, "join_request_notify_in_group", False):
-            nickname = await self._api._get_user_nickname(event, user_id)
+            nickname = await self._api._get_user_nickname(event, applicant_id)
             # #189：补充 QQ 等级（协议端不支持时显示「未知」）
-            level = await self._api._get_stranger_level(event, user_id) or "未知"
+            level = await self._api._get_stranger_level(event, applicant_id) or "未知"
             # #261：昵称获取失败时明确标注，避免管理员误以为昵称就是 QQ 号
-            nickname_display = nickname or f"获取失败({user_id})"
+            nickname_display = nickname or f"获取失败({applicant_id})"
+            # #270：邀请入群时分行展示邀请人与被邀请人，
+            # 不再把邀请人 A 的 QQ 标成「申请人」
+            invite_lines = ""
+            if third_party_invite:
+                invite_lines = (
+                    f"类型：邀请入群\n"
+                    f"邀请人QQ：{inviter_id}\n"
+                    f"被邀请人QQ：{applicant_id}\n"
+                )
             notify_text = (
                 f"【新人加群】通知\n"
+                f"{invite_lines}"
                 f"用户qq昵称：{nickname_display}\n"
-                f"用户qq号：{user_id}\n"
+                f"用户qq号：{applicant_id}\n"
                 f"qq等级：{level}\n"
                 f"加群验证消息：{comment or '无'}\n"
                 f"回复 /同意 或 /拒绝 或 /拉黑（引用本消息）"
@@ -217,7 +298,9 @@ class JoinReviewService:
             # 暂存 flag 等待引用回复
             sent_id = await self._api._send_group_text(event, group_id, notify_text)
             pending = self._store.runtime_map("pending_join_requests")
-            record = {"flag": flag, "group_id": group_id, "user_id": user_id,
+            # #270：user_id 一律存申请人/被邀请人；inviter_user_id 仅作记录
+            record = {"flag": flag, "group_id": group_id, "user_id": applicant_id,
+                      "inviter_user_id": inviter_id,
                       "sub_type": sub_type, "ts": int(time.time())}
             # #258：顺带清理超过 7 天的陈旧待处理记录，防止 runtime.json 无限膨胀
             stale = [k for k, v in pending.items()
@@ -234,17 +317,21 @@ class JoinReviewService:
                                "待处理记录改按 flag 暂存，引用回复时按内容兜底定位")
             self._store.save_config()
             # #229：原 join_request_notify_enabled（#205）全局开关已移除，通知改为始终发送
+            invite_note = f"邀请人QQ: {inviter_id}\n" if third_party_invite else ""
             await self._api._notify_admins(
-                f"[加群请求] {user_id} 申请加入群 {group_id}\n"
+                f"[加群请求] {applicant_id} 申请加入群 {group_id}\n"
+                f"{invite_note}"
                 f"已在群内发送提醒，请管理员引用回复同意/拒绝",
                 group_id=group_id,
             )
         else:
             # #226：未开启群内提醒时也必须通知管理员，否则普通加群申请不会有任何通知。
             # #229：随 join_request_notify_enabled 去重移除，这里不再有全局开关判定。
-            nickname = await self._api._get_user_nickname(event, user_id)
+            nickname = await self._api._get_user_nickname(event, applicant_id)
+            invite_note = f"邀请人QQ: {inviter_id}\n" if third_party_invite else ""
             await self._api._notify_admins(
-                f"[加群请求] {nickname}（{user_id}）申请加入群 {group_id}\n"
+                f"[加群请求] {nickname}（{applicant_id}）申请加入群 {group_id}\n"
+                f"{invite_note}"
                 f"验证消息: {comment or '无'}\n"
                 f"可用 /加群申请待处理 查看，或在群内开启提醒后引用回复同意/拒绝",
                 group_id=group_id,

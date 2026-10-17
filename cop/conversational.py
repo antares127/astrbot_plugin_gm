@@ -46,6 +46,13 @@ if TYPE_CHECKING:
 
 # ===================== 重复表情包撤回（#196，原 dup_face.py） =====================
 
+# #273：同一发送者两次发出相同表情包之间，最多允许间隔的「其它消息」条数。
+# 仅当相同表情在紧邻窗口内（中间不超过 _DUP_FACE_MAX_GAP 条消息）重发才判重复；
+# 中间聊了若干条其它消息后再发同一表情属正常使用，不再撤回。
+_DUP_FACE_MAX_GAP = 2
+_DUP_FACE_WINDOW = 1800  # 指纹保留窗口（秒），沿用原 30 分钟
+_DUP_FACE_MAX_KEYS = 200  # 单发送者缓存指纹上限，沿用原上限
+
 
 class DupFaceService:
     """重复表情包检测与撤回服务。"""
@@ -77,13 +84,16 @@ class DupFaceService:
         """#196：检测群内重复表情包（face id / 图片指纹），命中则撤回新消息。
 
         仅撤回新发的重复消息（旧消息可能已超撤回窗口）；
-        图片指纹优先 md5，回退 file/url（review#213 unstable-fingerprint）；
-        seen 仅保留最近 30 分钟指纹，避免陈旧指纹误判（review#213 unbounded-growth）。
+        图片指纹优先 md5，回退 file/url（review#213 unstable-fingerprint）。
 
         #239：指纹按「群 + 发送者」隔离——旧实现只按群记录，导致
         B 发出与 A 相同的表情包会被当成 A 的重复而误撤回。
         #238：同一 message_id 只处理一次，避免消息被重复投递时把
         "自己"当成重复（仅发一次却被撤回）。
+        #273：不再把 30 分钟窗口内出现过的相同表情一律判重。seen 改为
+        {指纹: [时间戳, 间隔消息数]}，该发送者每发一条其它消息，所有缓存指纹的
+        间隔数 +1；只有相同指纹间隔消息数 ≤ _DUP_FACE_MAX_GAP 时才判重复，
+        「表情 → 几条聊天 → 同一表情」的正常使用不再被撤回。
         """
         if not self._dup_face_enabled(group_id):
             return
@@ -100,8 +110,6 @@ class DupFaceService:
                 fp = d.get("md5") or d.get("file") or d.get("url")
                 if fp:
                     keys.append(("image", str(fp)))
-        if not keys:
-            return
         sender_id = str(raw.get("user_id", ""))
         mid = raw.get("message_id")
         # #238：同一条消息只判定一次（重复投递不再被当成"重复表情包"）
@@ -110,19 +118,32 @@ class DupFaceService:
             if str(last_mid) == str(mid):
                 return
             self._runtime._dup_face_last_mid[group_id] = mid
+        # seen：{指纹: [上次出现时间戳, 距上次出现后该发送者发的其它消息数]}
+        seen = self._runtime._dup_face_seen.setdefault((group_id, sender_id), {})
+        # 清理超过时间窗口的陈旧指纹
+        for fp in [k for k, v in seen.items() if now - v[0] > _DUP_FACE_WINDOW]:
+            del seen[fp]
+        if not keys:
+            # 非表情包消息：所有指纹的间隔数 +1（#273：用于衡量是否"紧邻"）
+            for v in seen.values():
+                v[1] += 1
+            return
         # 同一消息内的相同指纹去重，避免自身重复计入
         keys = list(dict.fromkeys(keys))
-        seen = self._runtime._dup_face_seen.setdefault((group_id, sender_id), [])
-        # 清理超过 30 分钟的陈旧指纹
-        seen[:] = [it for it in seen if now - it[1] <= 1800]
-        old_keys = {it[0] for it in seen}
-        dup = any(k in old_keys for k in keys)
+        # 命中条件：指纹出现过且中间间隔消息数未超阈值
+        dup_fps = {k for k in keys if k in seen and seen[k][1] <= _DUP_FACE_MAX_GAP}
+        # 本次未出现的指纹间隔 +1；本次出现的指纹随后重置为 [now, 0]
+        for k, v in seen.items():
+            if k not in keys:
+                v[1] += 1
         for k in keys:
-            if k not in old_keys:
-                seen.append((k, now))
-        if len(seen) > 200:
-            del seen[: len(seen) - 200]
-        if dup and mid is not None:
+            seen[k] = [now, 0]
+        if len(seen) > _DUP_FACE_MAX_KEYS:
+            overflow = len(seen) - _DUP_FACE_MAX_KEYS
+            oldest = sorted(seen, key=lambda fp: seen[fp][0])[:overflow]
+            for old_fp in oldest:
+                del seen[old_fp]
+        if dup_fps and mid is not None:
             ok, err = await self._api._do_recall(event, mid)
             if ok:
                 logger.info(f"[重复表情包] 群 {group_id} 用户 {sender_id} 撤回重复表情包消息 {mid}")
@@ -131,6 +152,17 @@ class DupFaceService:
 
 
 # ===================== 口语化群管指令（#254，原 colloquial.py） =====================
+
+# 自禁言（口语化 /禁我）说法：
+#  - 「禁我」「禁言我」要求出现在句首或标点/空白之后，排除
+#    「别禁我」「为什么禁我」「你敢禁我」之类的疑问/反问句误触发；
+#  - 「把我禁言」「给我禁言」「自我禁言」「自怼」为无歧义说法直接命中。
+_SELF_MUTE_RE = re.compile(
+    r"(?:^|[，。,.\s:：、])禁我"
+    r"|(?:^|[，。,.\s:：、])禁言我(?:自己)?"
+    r"|[把给将]我(?:给)?禁言"
+    r"|自我禁言|自怼"
+)
 
 
 class ColloquialService:
@@ -169,7 +201,8 @@ class ColloquialService:
         if re.search(r"设(?:为|成|置)?(?:群)?管理|上管理|给.{0,4}管理|加管理|升管理", text):
             return "admin"
         # ban 为常见网络用语，用前后非英文字母边界避免误命中 banana/urban 等
-        if re.search(r"禁言|闭嘴|封口|静音|沉默|封禁|(?<![a-zA-Z])ban(?![a-zA-Z])", text, re.IGNORECASE):
+        # 「禁我」「自怼」为自禁言说法（交由下方自禁言分支处理，任意成员可用）
+        if re.search(r"禁言|禁我|自怼|闭嘴|封口|静音|沉默|封禁|(?<![a-zA-Z])ban(?![a-zA-Z])", text, re.IGNORECASE):
             return "mute"
         if re.search(r"踢|移出群|清出群", text):
             return "kick"
@@ -197,6 +230,22 @@ class ColloquialService:
         intent = self._detect_colloquial_intent(text)
         if not intent:
             return False
+
+        # 自禁言（「禁我 / 自怼 / 把我禁言」）：任意成员可用，权限与 /禁我 命令一致，
+        # 必须在管理员权限校验之前处理，否则普通成员的自禁请求会被直接拒绝。
+        # 命中后就地处置并返回，消息不再下沉到 AstrBot 核心 LLM
+        # （否则会被模型兜底回复成 "You have no egg" 之类无关内容）。
+        if intent == "mute" and _SELF_MUTE_RE.search(text):
+            parsed = _parse_duration_minutes(text)
+            if parsed is None:
+                parsed = 10  # 缺省 10 分钟，与 /禁我 一致
+            minutes = max(_MUTE_MIN_MINUTES, min(int(parsed), _MUTE_CLAMP_MAX_MINUTES))
+            ok = await self._api._mute_member(event, group_id, user_id, minutes * 60)
+            if self._history._should_notify_mute(group_id, ok):
+                msg = f"已禁言自己 {_format_minutes(minutes)}" if ok else \
+                    "禁言自己失败（请确认 bot 有管理员权限，且你不是群主/管理员）"
+                await self._api._send(event, self._mp._build_text(msg))
+            return True
 
         # 权限校验：非插件管理员直接拒绝（与命令语义一致）
         if not self._perms._is_authorized(raw, user_id):
