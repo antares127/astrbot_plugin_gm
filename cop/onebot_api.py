@@ -24,6 +24,16 @@ from .compat import MessageChain
 if TYPE_CHECKING:
     from .config_store import ConfigStore
 
+# PR #277 审查反馈：协议端错误文案可能回显请求参数（如 base64:// 全量图片
+# 数据、带 token 的下载 URL），直接落日志会泄露内容。入库前统一截断。
+_B64_PAYLOAD_RE = re.compile(r"base64://?[A-Za-z0-9+/=\s]{16,}")
+
+
+def _sanitize_log_text(text, limit: int = 80) -> str:
+    """日志文本脱敏：抹除 base64 载荷并按 limit 截断。"""
+    t = _B64_PAYLOAD_RE.sub("base64://<已省略>", str(text))
+    return t[:limit]
+
 
 class OneBotApi:
     """OneBot action 调用与消息收发封装。"""
@@ -68,6 +78,14 @@ class OneBotApi:
                     return False
             if status in {"ok", "async"}:
                 return True
+            # #268：无 status/retcode 时，只含错误描述字段（wording/msg/message/
+            # error/errmsg）且不带 data 的响应是失败结构——部分协议端权限不足时
+            # 返回 {"wording": "ERR..."}，旧逻辑 bool(dict) 误判为成功。
+            # 含 data（含 data=null 之外的数据载荷）仍按旧语义 bool(result) 处理。
+            error_keys = ("wording", "msg", "message", "error", "errmsg")
+            if any(k in result for k in error_keys) and "data" not in result:
+                logger.warning(f"[OneBot] 响应无 status/retcode 但含错误字段，判定为失败: {result}")
+                return False
         return bool(result)
 
     def _describe_action_failure(self, result, action: str) -> str:
@@ -75,7 +93,8 @@ class OneBotApi:
         if result is None:
             return f"当前 OneBot 实现可能不支持此 API（{action} 无可用调用通路）"
         if isinstance(result, str):
-            return (result.strip() or f"{action} 调用失败")[:100]
+            return _sanitize_log_text(result.strip()
+                                      or f"{action} 调用失败", 100)
         if isinstance(result, dict):
             retcode = result.get("retcode")
             message = str(result.get("message") or result.get("msg") or
@@ -99,7 +118,7 @@ class OneBotApi:
                     or "权限" in message or retcode in (1200,):
                 return f"权限不足（{action} 需要更高权限，如群主/管理员身份）"
             if message:
-                return f"后端返回：{message[:80]}"
+                return f"后端返回：{_sanitize_log_text(message)}"
             return f"调用失败(retcode={retcode})"
         return f"{action} 调用失败"
 
@@ -398,9 +417,18 @@ class OneBotApi:
         return ok
 
     async def _set_group_avatar(self, event: AstrMessageEvent, group_id: str, file: str):
-        """修改群头像，file 可以是 URL 或本地路径或 base64。"""
-        return await self._execute_action(event, "set_group_portrait",
-                                          group_id=group_id, file=file)
+        """修改群头像，file 可以是 URL 或本地路径或 base64。
+
+        #268：改用 _call_onebot_raw 拿原始响应判定——ActionFailed 的
+        retcode/wording 不再被吞掉，bot 无群管权限等失败不会再误报成功。
+        """
+        res = await self._call_onebot_raw(
+            event, "set_group_portrait", group_id=group_id, file=file)
+        ok = self._action_result_success(res)
+        if not ok:
+            logger.warning(f"[群头像] 设置失败 group={group_id}: "
+                           f"{self._describe_action_failure(res, 'set_group_portrait')}")
+        return ok
 
     async def _handle_group_request(self, event: AstrMessageEvent, flag: str, approve: bool,
                                     reason: str = "", sub_type: str = "add") -> bool:
@@ -462,7 +490,9 @@ class OneBotApi:
         qtext = "".join(parts)
         if "【新人加群】" not in qtext:
             return {}
-        m = re.search(r"用户qq号[:：]\s*(\d{5,12})", qtext)
+        # #270：invite 通知同时含「邀请人QQ」行，必须优先匹配「被邀请人QQ」
+        # （待处理记录 user_id 存的是被邀请人/申请人），普通申请仍匹配「用户qq号」
+        m = re.search(r"(?:被邀请人QQ|用户qq号)[:：]\s*(\d{5,12})", qtext)
         if not m:
             return {}
         uid = m.group(1)
@@ -495,6 +525,28 @@ class OneBotApi:
             if m.get("role") == "owner":
                 return str(m.get("user_id", ""))
         return ""
+
+    async def _is_group_member(self, event: AstrMessageEvent, group_id: str, user_id: str) -> bool:
+        """#271：查询用户是否已是群成员。
+
+        管理员直接把人拉进群后，部分协议端仍会投递 group 请求/通知，
+        用 get_group_member_info 复核可避免对已入群用户重复弹「新人加群」。
+        协议端不支持该 action、查询失败或查无此人时一律返回 False，
+        保证普通加群申请（申请人尚未入群）流程不受影响。
+        """
+        if not group_id or not user_id:
+            return False
+        try:
+            ok, res = await self._call_action_fallback(
+                event, ("get_group_member_info",), group_id=group_id, user_id=user_id)
+        except Exception as exc:
+            logger.debug(f"[加群审核] get_group_member_info 查询失败 "
+                         f"group={group_id} user={user_id}: {exc}")
+            return False
+        if not ok:
+            return False
+        data = res.get("data") if isinstance(res, dict) and isinstance(res.get("data"), dict) else res
+        return isinstance(data, dict) and data.get("user_id") is not None
 
     @staticmethod
     def _extract_message_id(result) -> str:
