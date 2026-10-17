@@ -55,6 +55,12 @@
         "hint": "开启后群内出现与近 30 分钟内相同的表情包（face id / 图片 md5→file→url 指纹）时自动撤回新消息。按群覆盖：/重复表情包撤回 开|关，或 group_overrides[gid][dup_face_recall_enabled]。",
         "default": false
     },
+    "qr_code_recall_enabled": {
+        "description": "二维码识别检测全局开关（#237，默认关）",
+        "type": "bool",
+        "hint": "开启后违规检测的图片审核通路会额外用视觉模型识别图片中的二维码并对其内容分类：普通二维码（收款码/好友码/正常活动码等）仅撤回；拉群广告二维码按广告违规处置（撤回+按广告禁言时长禁言），黄赌毒二维码按违规图片处置（撤回+按图片禁言时长禁言）。仅 api_type=openai_vision 时生效。推荐按群覆盖：/开关二维码撤回 on|off。",
+        "default": false
+    },
     "report_notify_admins": {
         "description": "接收举报通知的插件管理员QQ号列表（推荐按群覆盖）",
         "type": "list",
@@ -106,6 +112,12 @@
         "type": "bool",
         "hint": "关闭后所有自动审核（违禁词拒绝/关键词同意）都不生效。管理员手动审核（引用回复同意/拒绝）不受影响。推荐按群覆盖：/设置群配置 join_audit_enabled true/false。",
         "default": true
+    },
+    "invite_auto_approve": {
+        "description": "第三方邀请入群自动通过（#241，默认关）",
+        "type": "bool",
+        "hint": "开启后，群成员邀请好友入群（协议端上报 sub_type=invite 且被邀请人非机器人）时自动同意，不再走加群审核与群内提醒；黑名单成员仍会被拒绝，bot 自己被邀请入群不受影响。推荐按群覆盖：/邀请通过 on|off。",
+        "default": false
     },
     "group_admin_admins_by_group": {
         "description": "按群设置「可设置/取消群管理」的专项管理员（{群号: [QQ...]}）",
@@ -336,18 +348,11 @@
         "hint": "推荐按群覆盖。",
         "default": []
     },
-    "banned_images": {
-        "description": "违禁图片 MD5 列表（按 MD5 比对）",
-        "type": "list",
-        "items": {"type": "string"},
-        "hint": "推荐按群覆盖。命中后撤回并按 ban_duration 禁言。在群内引用图片回复 /添加违禁图片 即可添加。",
-        "default": []
-    },
     "banned_image_files": {
         "description": "违禁图片（上传图片文件，自动计算 MD5 参与比对）",
         "type": "file",
         "file_types": ["png", "jpg", "jpeg", "gif", "webp", "bmp"],
-        "hint": "在 WebUI 直接上传违禁图片文件，插件启动时自动计算 MD5 并入违禁列表（#184）。与上方 MD5 列表、群内 /添加违禁图片 同时生效。",
+        "hint": "在 WebUI 直接上传违禁图片文件，插件启动时自动计算 MD5 并入违禁列表（#184）。与群内 /添加违禁图片（按群覆盖）同时生效。原「填空式 MD5 列表」配置项已移除（#265），历史手动填写的全局 MD5 不再生效。",
         "default": []
     },
     "admin_bypass": {

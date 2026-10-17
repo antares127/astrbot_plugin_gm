@@ -26,7 +26,7 @@
 
 `main.py` 的 `GroupAdminPlugin` 类作为**唯一门面**，保留：
 
-- **93 个** `@filter.command` 命令入口；
+- **97 个** `@filter.command` 命令入口（#278 新增 `清人`、`邀请通过`、`开关二维码撤回`）；
 - **2 个** `@filter.event_message_type` 事件钩子：`on_group_message`（`GROUP_MESSAGE`）、
   `on_group_event`（`ALL`）；
 - **1 个** `@filter.after_message_sent` 钩子。
@@ -255,6 +255,10 @@ AstrBot 框架在注册 handler 时，**依据 `handler.__module__` 精确绑定
 > 并新增 `加群自动拒绝关键词`。因此 `GM_COMMAND_NAMES` 现为 **96** 项、`@filter.command` 仍为 **93** 个，
 > 「仅装饰器有」列表仅剩 `开关链接检测`、`重复表情包撤回`（以
 > [`docs/interfaces_snapshot.md`](interfaces_snapshot.md) 为准）。
+>
+> 后续变更（#278）：新增 `清人`、`邀请通过`、`开关二维码撤回` 三个命令并同步进入
+> `GM_COMMAND_NAMES`，现为 **102** 项、`@filter.command` 为 **97** 个
+> （#277 记 GM_COMMAND_NAMES 99 项、`@filter.command` 94 个）。
 
 ---
 

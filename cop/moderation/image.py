@@ -72,6 +72,9 @@ class ImageModeration:
         if truncated or not image_data:
             return False
         md5 = hashlib.md5(image_data).hexdigest()
+        # #265：schema 已移除 banned_images 填空式录入项，此处全局读取仅为
+        # 兼容老用户 config.json 中的残留数据（仍生效、避免升级后行为漂移）；
+        # 新配置统一通过 /添加违禁图片（按群覆盖）与 WebUI 上传维护。
         global_banned = set(self.config.get("banned_images", []) or [])
         group_banned = set(self._store.get_group_setting(group_id, "banned_images", []) or [])
         banned_md5s = global_banned | group_banned
@@ -151,6 +154,89 @@ class ImageModeration:
         except Exception as e:
             logger.error(f"[群违规检测] 图片审核失败: {e}")
             return False, ""
+
+    async def _check_qr_code(self, image_url: str) -> tuple:
+        """#237：识别图片中的二维码并对内容分类。
+
+        返回 (category, reason) 二元组，category 取值：
+        - "none"：不含二维码，或下载/识别失败（放行）
+        - "plain"：普通二维码（收款码/好友码/正常活动码/小程序码等无危害内容）
+        - "group_ad"：拉人入群的群二维码或带广告引流性质的推广码
+        - "adult"：二维码内容涉及色情/赌博/毒品等黄赌毒内容
+
+        仅 openai_vision 审核通路支持；moderation API 无法判定二维码，跳过并记
+        debug 日志。失败一律返回 ("none", "")，不抛异常。
+        """
+        if aiohttp is None:
+            return "none", ""
+        api_endpoint = self.config.get("api_endpoint", "")
+        api_key = self.config.get("api_key", "")
+        if not api_endpoint:
+            return "none", ""
+        if self.config.get("api_type", "openai_vision") != "openai_vision":
+            logger.debug("[二维码检测] 当前 api_type 非 openai_vision，无法识别二维码，跳过")
+            return "none", ""
+        try:
+            image_data, _truncated = await self._download_image(image_url)
+            if not image_data:
+                return "none", ""
+            image_b64 = base64.b64encode(image_data).decode("utf-8")
+            prompt = (
+                "请判断这张图片中是否包含二维码（QR code，包括群二维码、好友二维码、"
+                "小程序码、赞赏码/收款码等），并对二维码所指内容或图片整体宣传内容分类："
+                "group_ad=拉人入群的群二维码/带广告引流推广性质的码；"
+                "adult=涉及色情、赌博、毒品等黄赌毒内容的码或图片；"
+                "plain=收款码/好友码/正常活动码等无危害普通二维码。请仅返回 JSON："
+                "{\"has_qr_code\": true/false, \"category\": \"plain/group_ad/adult\", "
+                "\"reason\": \"简短原因\"}"
+            )
+            payload = {
+                "model": self.config.get("model_name", "gpt-4o"),
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                ]}],
+                "max_tokens": 200,
+                "temperature": 0.1,
+            }
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession() as session:
+                async with session.post(api_endpoint, json=payload, headers=headers, timeout=timeout) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.error(f"[二维码检测] API 失败: {resp.status} {text[:200]}")
+                        return "none", ""
+                    data = await resp.json()
+            content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content", "")
+            if not content:
+                return "none", ""
+            # 解析容错：先尝试整体 JSON（模型规范输出），失败再正则提取首个
+            # {...} 片段（模型可能附加说明文字）；均失败按未命中放行（fail-open，
+            # 误放行优于误撤回，失败已记 error 日志）。
+            try:
+                result = json.loads(content)
+            except (json.JSONDecodeError, ValueError):
+                match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
+                if not match:
+                    return "none", ""
+                try:
+                    result = json.loads(match.group())
+                except (json.JSONDecodeError, ValueError):
+                    return "none", ""
+            if not bool(result.get("has_qr_code", False)):
+                return "none", ""
+            category = str(result.get("category", "plain")).lower().strip()
+            if category not in ("plain", "group_ad", "adult"):
+                # 分类缺失或非法时兜底按普通二维码处理（保持旧行为：仅撤回）
+                category = "plain"
+            reason = str(result.get("reason", ""))[:100]
+            return category, reason
+        except Exception as e:
+            logger.error(f"[二维码检测] 识别失败: {e}")
+            return "none", ""
 
     async def _check_with_openai_vision(self, api_endpoint: str, api_key: str, image_b64: str):
         model_name = self.config.get("model_name", "gpt-4o")
