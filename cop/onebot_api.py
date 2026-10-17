@@ -24,6 +24,16 @@ from .compat import MessageChain
 if TYPE_CHECKING:
     from .config_store import ConfigStore
 
+# PR #277 审查反馈：协议端错误文案可能回显请求参数（如 base64:// 全量图片
+# 数据、带 token 的下载 URL），直接落日志会泄露内容。入库前统一截断。
+_B64_PAYLOAD_RE = re.compile(r"base64://?[A-Za-z0-9+/=\s]{16,}")
+
+
+def _sanitize_log_text(text, limit: int = 80) -> str:
+    """日志文本脱敏：抹除 base64 载荷并按 limit 截断。"""
+    t = _B64_PAYLOAD_RE.sub("base64://<已省略>", str(text))
+    return t[:limit]
+
 
 class OneBotApi:
     """OneBot action 调用与消息收发封装。"""
@@ -83,7 +93,8 @@ class OneBotApi:
         if result is None:
             return f"当前 OneBot 实现可能不支持此 API（{action} 无可用调用通路）"
         if isinstance(result, str):
-            return (result.strip() or f"{action} 调用失败")[:100]
+            return _sanitize_log_text(result.strip()
+                                      or f"{action} 调用失败", 100)
         if isinstance(result, dict):
             retcode = result.get("retcode")
             message = str(result.get("message") or result.get("msg") or
@@ -107,7 +118,7 @@ class OneBotApi:
                     or "权限" in message or retcode in (1200,):
                 return f"权限不足（{action} 需要更高权限，如群主/管理员身份）"
             if message:
-                return f"后端返回：{message[:80]}"
+                return f"后端返回：{_sanitize_log_text(message)}"
             return f"调用失败(retcode={retcode})"
         return f"{action} 调用失败"
 

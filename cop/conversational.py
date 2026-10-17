@@ -165,6 +165,22 @@ _SELF_MUTE_RE = re.compile(
 )
 
 
+def _clamp_mute_minutes(parsed) -> int:
+    """把时长解析结果夹取到合法分钟数，异常类型回退默认 10 分钟。
+
+    _parse_duration_minutes 的契约是返回 int 或 None，但万一回归返回意外
+    类型，int(parsed) 会抛 ValueError/TypeError 打断整条消息处理路径
+    （PR #277 审查反馈），此处统一做类型守卫与夹取。
+    """
+    if isinstance(parsed, bool) or not isinstance(parsed, (int, float)):
+        if not (isinstance(parsed, str) and parsed.strip().isdigit()):
+            return 10  # 缺省 10 分钟，与 /禁我 一致
+    try:
+        return max(_MUTE_MIN_MINUTES, min(int(parsed), _MUTE_CLAMP_MAX_MINUTES))
+    except (TypeError, ValueError):
+        return 10
+
+
 class ColloquialService:
     """@bot + 口语化禁言/踢人/设管理请求处理服务。"""
 
@@ -236,10 +252,7 @@ class ColloquialService:
         # 命中后就地处置并返回，消息不再下沉到 AstrBot 核心 LLM
         # （否则会被模型兜底回复成 "You have no egg" 之类无关内容）。
         if intent == "mute" and _SELF_MUTE_RE.search(text):
-            parsed = _parse_duration_minutes(text)
-            if parsed is None:
-                parsed = 10  # 缺省 10 分钟，与 /禁我 一致
-            minutes = max(_MUTE_MIN_MINUTES, min(int(parsed), _MUTE_CLAMP_MAX_MINUTES))
+            minutes = _clamp_mute_minutes(_parse_duration_minutes(text))
             ok = await self._api._mute_member(event, group_id, user_id, minutes * 60)
             if self._history._should_notify_mute(group_id, ok):
                 msg = f"已禁言自己 {_format_minutes(minutes)}" if ok else \
@@ -262,10 +275,7 @@ class ColloquialService:
             return True
 
         if intent == "mute":
-            parsed = _parse_duration_minutes(text)
-            if parsed is None:
-                parsed = 10  # 缺省 10 分钟
-            minutes = max(_MUTE_MIN_MINUTES, min(int(parsed), _MUTE_CLAMP_MAX_MINUTES))
+            minutes = _clamp_mute_minutes(_parse_duration_minutes(text))
             ok = await self._api._mute_member(event, group_id, target, minutes * 60)
             if ok:
                 await self._stats._record_mute_and_maybe_kick(event, group_id, target, user_id)

@@ -108,6 +108,13 @@ class JoinReviewService:
         # #252：sub_type 用申请事件原值（add/invite），部分实现要求与 flag 匹配
         sub_type = str(raw.get("sub_type") or "add")
 
+        # #155：审核总开关关闭后，全部自动审核逻辑都跳过。
+        # PR #277 审查反馈：早退必须先于 inviter 解析 / _get_self_id /
+        # _is_group_member 等调用，关闭审核时不产生任何额外 OneBot 请求开销。
+        audit_enabled = bool(self._store.get_group_setting(group_id, "join_audit_enabled", True))
+        if not audit_enabled:
+            return
+
         # #270：解析邀请场景下的真实申请人（被邀请人）
         self_id = str(self._api._get_self_id(event, raw) or "")
         inviter_id = ""
@@ -123,11 +130,6 @@ class JoinReviewService:
                 inviter_id = user_id
             # invitee 为空或等于 self_id：标准语义「bot 被邀请入群」，
             # 发起人即邀请人，沿用旧流程
-
-        # #155：审核总开关关闭后，全部自动审核逻辑都跳过
-        audit_enabled = bool(self._store.get_group_setting(group_id, "join_audit_enabled", True))
-        if not audit_enabled:
-            return
 
         # #271：审核对象已是群成员（管理员直接拉入 / 申请已被处理）→
         # 不再审批、不再发「新人加群」通知，并清理残留待处理记录。
