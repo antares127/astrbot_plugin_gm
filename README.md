@@ -96,7 +96,7 @@
 | `/邀请通过 on/off` | 第三方邀请入群自动通过（invite_auto_approve，默认关，#241：仅对协议端扩展的「A 邀请 B」事件生效，黑名单成员仍被拦截，bot 被邀请入群不受影响） |
 | `/开关踢人清历史 on/off` | 踢人时撤回历史消息（kick_recall_enabled） |
 | `/开关语音检测 on/off` | 语音转文字违规检测（voice_check_enabled） |
-| `/开关二维码撤回 on/off` | 二维码识别自动撤回（qr_code_recall_enabled，默认关，#237：命中仅撤回不禁言，需 openai_vision 审核 API） |
+| `/开关二维码撤回 on/off` | 二维码识别检测（qr_code_recall_enabled，默认关，#237：普通码仅撤回；拉群广告码/黄赌毒码撤回+禁言，需 openai_vision 审核 API） |
 | `/设置排名人数 N` | 发言排名显示人数（rank_top_n，≥1） |
 | `/设置踢人阈值 N` | 刷屏禁言转踢人的阈值（mute_kick_threshold，≥0） |
 | `/设置消息历史条数 N` | 本地撤回消息缓存条数（max_message_history，≥10） |
@@ -245,7 +245,7 @@ pip install astrbot_plugin_group_admin
 | `profanity_ban_duration_severity` | dict | `{"mild":180,"medium":600,"severe":1800}` | AI 判骂人按严重程度分级禁言时长（秒，#243；模型未返回/返回非法时回退 `profanity_ban_duration`；可按群覆盖） |
 | `group_admin_admins_by_group` | dict | `{}` | **按群设置**可设置/取消群管理的专项管理员：`{"群号": ["QQ1","QQ2"]}`（命中该群用本群名单；群内 `/添加管理管理` / `/删除管理管理` 优先级更高；值也可写 `"10001,10002"`） |
 | `banned_image_files` | file | `[]` | WebUI 上传违禁图片文件（自动计算 MD5 参与比对；#184；**全局配置**，需 AstrBot v4.13.0+；#265 起原「填空式 MD5 列表」banned_images 配置项已移除） |
-| `qr_code_recall_enabled` | bool | `false` | 二维码图片自动撤回（#237：图片审核通路额外用视觉模型识别群二维码/小程序码/收款码等，命中仅撤回不禁言；仅 api_type=openai_vision 时生效；推荐按群覆盖 `/开关二维码撤回 on|off`） |
+| `qr_code_recall_enabled` | bool | `false` | 二维码识别检测（#237：图片审核通路额外用视觉模型识别二维码并分类内容——普通二维码（收款码/好友码/活动码等）仅撤回；拉群广告二维码按广告违规禁言、黄赌毒二维码按违规图片禁言（撤回+禁言+计数）；仅 api_type=openai_vision 时生效；推荐按群覆盖 `/开关二维码撤回 on|off`） |
 | `kick_recall_enabled` | bool | `false` | 踢人时自动撤回该成员最近消息（#145，对齐 zcj-ui/astrbot_plugin_group_guardian） |
 | `kick_recall_count` | int | `10` | 踢人撤回消息条数（1-50，#145） |
 | `link_whitelist` | list | `[]` | 全局链接白名单域名列表（#195，命中不检测/撤回/禁言；本群白名单用 `/添加链接白名单` 维护） |

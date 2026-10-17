@@ -249,16 +249,30 @@ class ModerationService:
                 logger.info(f"[群违规检测] 群 {group_id} 用户 {user_id} 图片违规(消息 {mid}): {reason}")
                 await self._handle_violation(event, "image", group_id, user_id, mid, reason)
                 return True
-            # #237：二维码识别自动撤回（全局开关 qr_code_recall_enabled 默认关，
-            # 按群覆盖指令 /开关二维码撤回）。命中仅撤回消息、不禁言、不计数。
-            if self._store.get_group_setting(group_id, "qr_code_recall_enabled", False) \
-                    and await self._image._check_qr_code(url):
-                mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
-                if mid:
-                    await self._api._recall_message(event, mid)
-                logger.info(f"[二维码检测] 群 {group_id} 用户 {user_id} 消息 {mid} 含二维码，已自动撤回")
-                await self._api._send(event, self._mp._build_text("检测到二维码图片，已自动撤回"))
-                return True
+            # #237：二维码内容识别（全局开关 qr_code_recall_enabled 默认关，
+            # 按群覆盖指令 /开关二维码撤回）。普通二维码仅撤回、不禁言；
+            # 拉群广告码按广告违规处置（ad 时长），黄赌毒码按违规图片处置
+            # （image 时长），均撤回+禁言+计数。
+            if self._store.get_group_setting(group_id, "qr_code_recall_enabled", False):
+                qr_category, qr_reason = await self._image._check_qr_code(url)
+                if qr_category in ("group_ad", "adult"):
+                    mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
+                    kind = "ad" if qr_category == "group_ad" else "image"
+                    if not qr_reason:
+                        qr_reason = "二维码指向拉群广告" if qr_category == "group_ad" \
+                            else "二维码涉及黄赌毒内容"
+                    logger.info(f"[二维码检测] 群 {group_id} 用户 {user_id} 消息 {mid} "
+                                f"命中二维码违规({qr_category}): {qr_reason}")
+                    await self._handle_violation(event, kind, group_id, user_id, mid,
+                                                 f"二维码内容违规({qr_reason})")
+                    return True
+                if qr_category == "plain":
+                    mid = str(raw.get("message_id", "")) if isinstance(raw, dict) else ""
+                    if mid:
+                        await self._api._recall_message(event, mid)
+                    logger.info(f"[二维码检测] 群 {group_id} 用户 {user_id} 消息 {mid} 含二维码，已自动撤回")
+                    await self._api._send(event, self._mp._build_text("检测到二维码图片，已自动撤回"))
+                    return True
         # 4) 语音转文字检测（#128）
         if self._store.get_group_setting(group_id, "voice_check_enabled", False):
             audio_urls = self._mp._extract_audio_urls(raw.get("message") or []) if isinstance(raw, dict) else []

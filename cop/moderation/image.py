@@ -152,30 +152,40 @@ class ImageModeration:
             logger.error(f"[群违规检测] 图片审核失败: {e}")
             return False, ""
 
-    async def _check_qr_code(self, image_url: str) -> bool:
-        """#237：识别图片是否包含二维码（群二维码/好友二维码/小程序码/付款码等）。
+    async def _check_qr_code(self, image_url: str) -> tuple:
+        """#237：识别图片中的二维码并对内容分类。
+
+        返回 (category, reason) 二元组，category 取值：
+        - "none"：不含二维码，或下载/识别失败（放行）
+        - "plain"：普通二维码（收款码/好友码/正常活动码/小程序码等无危害内容）
+        - "group_ad"：拉人入群的群二维码或带广告引流性质的推广码
+        - "adult"：二维码内容涉及色情/赌博/毒品等黄赌毒内容
 
         仅 openai_vision 审核通路支持；moderation API 无法判定二维码，跳过并记
-        debug 日志。下载失败 / 解析失败一律视为未命中（放行），不抛异常。
+        debug 日志。失败一律返回 ("none", "")，不抛异常。
         """
         if aiohttp is None:
-            return False
+            return "none", ""
         api_endpoint = self.config.get("api_endpoint", "")
         api_key = self.config.get("api_key", "")
         if not api_endpoint:
-            return False
+            return "none", ""
         if self.config.get("api_type", "openai_vision") != "openai_vision":
             logger.debug("[二维码检测] 当前 api_type 非 openai_vision，无法识别二维码，跳过")
-            return False
+            return "none", ""
         try:
             image_data, _truncated = await self._download_image(image_url)
             if not image_data:
-                return False
+                return "none", ""
             image_b64 = base64.b64encode(image_data).decode("utf-8")
             prompt = (
                 "请判断这张图片中是否包含二维码（QR code，包括群二维码、好友二维码、"
-                "小程序码、赞赏码/收款码等）。请仅返回 JSON："
-                "{\"has_qr_code\": true/false, \"reason\": \"简短原因\"}"
+                "小程序码、赞赏码/收款码等），并对二维码所指内容或图片整体宣传内容分类："
+                "group_ad=拉人入群的群二维码/带广告引流推广性质的码；"
+                "adult=涉及色情、赌博、毒品等黄赌毒内容的码或图片；"
+                "plain=收款码/好友码/正常活动码等无危害普通二维码。请仅返回 JSON："
+                "{\"has_qr_code\": true/false, \"category\": \"plain/group_ad/adult\", "
+                "\"reason\": \"简短原因\"}"
             )
             payload = {
                 "model": self.config.get("model_name", "gpt-4o"),
@@ -195,19 +205,26 @@ class ImageModeration:
                     if resp.status != 200:
                         text = await resp.text()
                         logger.error(f"[二维码检测] API 失败: {resp.status} {text[:200]}")
-                        return False
+                        return "none", ""
                     data = await resp.json()
             content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content", "")
             if not content:
-                return False
+                return "none", ""
             match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
             if not match:
-                return False
+                return "none", ""
             result = json.loads(match.group())
-            return bool(result.get("has_qr_code", False))
+            if not bool(result.get("has_qr_code", False)):
+                return "none", ""
+            category = str(result.get("category", "plain")).lower().strip()
+            if category not in ("plain", "group_ad", "adult"):
+                # 分类缺失或非法时兜底按普通二维码处理（保持旧行为：仅撤回）
+                category = "plain"
+            reason = str(result.get("reason", ""))[:100]
+            return category, reason
         except Exception as e:
             logger.error(f"[二维码检测] 识别失败: {e}")
-            return False
+            return "none", ""
 
     async def _check_with_openai_vision(self, api_endpoint: str, api_key: str, image_b64: str):
         model_name = self.config.get("model_name", "gpt-4o")
