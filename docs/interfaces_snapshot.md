@@ -5,7 +5,7 @@
 
 ## 1. 命令入口 `@filter.command`
 
-**命令总数：94**
+**命令总数：97**（#278 新增 `清人`、`邀请通过`、`开关二维码撤回`，行号 95-97 追加于表尾）
 
 
 | # | 命令名 | 说明 | 别名 | 方法 |
@@ -77,10 +77,10 @@
 | 65 | `禁言` | 禁言成员 | — | `mute_cmd` |
 | 66 | `禁言列表` | 查看本群当前被禁言成员列表 | — | `mute_list_cmd` |
 | 67 | `给我头衔` | 自设群头衔（/给我头衔 标题内容） | — | `self_title_cmd` |
-| 68 | `群信息` | 查看本群资料（名称/号/标签/人数） | — | `group_info_cmd` |
+| 68 | `群信息` | 查看本群资料（名称/号/标签/人数；#276 标签优先走 get_group_tags，失败回退 get_group_info 的 tags 字段） | — | `group_info_cmd` |
 | 69 | `群友昵称` | 设置他人群昵称（@某人 或 QQ号 + 新昵称；群管/群主/插件管理员） | 别人昵称、群昵称、设群友昵称、设群昵称 | `set_other_card_cmd` |
 | 70 | `群名` | 修改本群名称（/群名 新群名） | 修改群名、改群名、群名称 | `set_group_name_cmd` |
-| 71 | `群标签` | 添加群标签（/群标签 标签名） | — | `set_group_tag_cmd` |
+| 71 | `群标签` | 添加群标签（/群标签 标签名）；不带参数查看本群群标签（#276，走 get_group_tags） | — | `set_group_tag_cmd` |
 | 72 | `群相册` | 引用图片上传到群相册（/群相册 相册名） | — | `group_album_upload_cmd` |
 | 73 | `群违规检测状态` | 查看群违规检测插件状态 | — | `moderation_status_cmd` |
 | 74 | `自己昵称` | 设置自己的群昵称 | 改昵称、改群昵称 | `set_self_card_cmd` |
@@ -104,6 +104,9 @@
 | 92 | `重复表情包撤回` | 按群覆盖重复表情包自动撤回（开/关，#196） | — | `toggle_dup_face_recall_cmd` |
 | 93 | `鞭尸` | 长期禁言被@的人（29天23小时59分） | — | `whip_corpse_cmd` |
 | 94 | `开关公告提示` | 开关发群公告结果回复（on/off，按群生效，#233） | — | `toggle_group_notice_notice_cmd` |
+| 95 | `清人` | 清理 N 天未发言成员（/清人 天数 [确认]，1-30） | — | `purge_inactive_cmd` |
+| 96 | `邀请通过` | 开关第三方邀请入群自动通过（on/off，按群生效，#241） | — | `toggle_invite_auto_approve_cmd` |
+| 97 | `开关二维码撤回` | 开关二维码识别自动撤回（on/off，按群生效，#237） | — | `toggle_qr_code_recall_cmd` |
 
 ### 别名明细（命令名 → 别名集合）
 
@@ -134,9 +137,8 @@
 
 - `after_message_sent`
 
-## 3. `_conf_schema.json` 配置键清单
 
-**配置键总数：64**
+**配置键总数：66**
 
 
 | # | key | type | default |
@@ -145,66 +147,68 @@
 | 2 | `mute_notice` | bool | `true` |
 | 3 | `colloquial_enabled` | bool | `true` |
 | 4 | `group_name_notice` | bool | `true` |
-| 5 | `reject_re_add` | bool | `false` |
-| 6 | `auto_recall_keywords` | list | `[]` |
-| 7 | `auto_recall_enabled_groups` | list | `[]` |
-| 8 | `dup_face_recall_enabled` | bool | `false` |
-| 9 | `report_notify_admins` | list | `[]` |
-| 10 | `rank_top_n` | int | `10` |
-| 11 | `join_approve_keywords` | list | `[]` |
-| 12 | `join_reject_keywords` | list | `[]` |
-| 13 | `join_notify_admins` | list | `[]` |
-| 14 | `join_request_notify_in_group` | bool | `false` |
-| 15 | `join_reject_reason` | string | `"不满足加群条件"` |
-| 16 | `join_audit_enabled` | bool | `true` |
-| 17 | `group_admin_admins_by_group` | dict | `{}` |
-| 18 | `api_type` | string | `"openai_vision"` |
-| 19 | `api_endpoint` | string | `""` |
-| 20 | `api_key` | string | `""` |
-| 21 | `model_name` | string | `"gpt-4o"` |
-| 22 | `detection_prompt` | text | `""` |
-| 23 | `threshold` | float | `0.7` |
-| 24 | `check_porn` | bool | `true` |
-| 25 | `check_sexy` | bool | `true` |
-| 26 | `enabled_groups` | list | `[]` |
-| 27 | `spam_check_enabled` | bool | `true` |
-| 28 | `spam_threshold` | int | `5` |
-| 29 | `spam_time_window` | int | `10` |
-| 30 | `spam_ban_duration` | int | `600` |
-| 31 | `profanity_check_enabled` | bool | `true` |
-| 32 | `profanity_use_ai` | bool | `true` |
-| 33 | `profanity_detection_prompt` | text | `"你是严格的内容审核助手。请判断以下文本是否包含骂人、侮辱、人身攻击。\n同时评估严重程度 severity，取值...` |
-| 34 | `profanity_ban_duration` | int | `600` |
-| 35 | `profanity_severity_enabled` | bool | `true` |
-| 36 | `profanity_ban_duration_severity` | dict | `{"mild": 180, "medium": 600, "severe": 1800}` |
-| 37 | `political_keywords` | list | `[]` |
-| 38 | `political_ban_duration` | int | `600` |
-| 39 | `profanity_keywords` | list | `["傻逼", "操你妈", "妈的", "他妈的", "草你妈", "艹你妈", "你妈死了", "去你妈的", ...` |
-| 40 | `ad_check_enabled` | bool | `true` |
-| 41 | `ad_ban_duration` | int | `600` |
-| 42 | `ad_keywords` | list | `["加群", "加微信", "加QQ", "联系我", "私聊", "代练", "代打", "刷钻", "刷币",...` |
-| 43 | `link_check_enabled` | bool | `false` |
-| 44 | `link_ban_duration` | int | `600` |
-| 45 | `link_whitelist` | list | `[]` |
-| 46 | `blacklisted_users` | list | `[]` |
-| 47 | `group_promotion_check_enabled` | bool | `true` |
-| 48 | `group_promotion_ban_duration` | int | `600` |
-| 49 | `ban_duration` | int | `600` |
-| 50 | `whitelist_users` | list | `[]` |
-| 51 | `banned_images` | list | `[]` |
-| 52 | `banned_image_files` | file | `[]` |
-| 53 | `admin_bypass` | bool | `true` |
-| 54 | `notify_on_violation` | bool | `true` |
-| 55 | `max_message_history` | int | `50` |
-| 56 | `kick_recall_enabled` | bool | `false` |
-| 57 | `kick_recall_count` | int | `10` |
-| 58 | `voice_check_enabled` | bool | `false` |
-| 59 | `voice_check_provider_id` | string | `""` |
-| 60 | `voice_asr_endpoint` | string | `""` |
-| 61 | `voice_asr_api_key` | string | `""` |
-| 62 | `voice_asr_model` | string | `""` |
-| 63 | `voice_check_timeout` | int | `15` |
-| 64 | `group_notice_notice` | bool | `true` |
+| 5 | `group_notice_notice` | bool | `true` |
+| 6 | `reject_re_add` | bool | `false` |
+| 7 | `auto_recall_keywords` | list | `[]` |
+| 8 | `auto_recall_enabled_groups` | list | `[]` |
+| 9 | `dup_face_recall_enabled` | bool | `false` |
+| 10 | `qr_code_recall_enabled` | bool | `false` |
+| 11 | `report_notify_admins` | list | `[]` |
+| 12 | `rank_top_n` | int | `10` |
+| 13 | `join_approve_keywords` | list | `[]` |
+| 14 | `join_reject_keywords` | list | `[]` |
+| 15 | `join_notify_admins` | list | `[]` |
+| 16 | `join_request_notify_in_group` | bool | `false` |
+| 17 | `join_reject_reason` | string | `"不满足加群条件"` |
+| 18 | `join_audit_enabled` | bool | `true` |
+| 19 | `invite_auto_approve` | bool | `false` |
+| 20 | `group_admin_admins_by_group` | dict | `{}` |
+| 21 | `api_type` | string | `"openai_vision"` |
+| 22 | `api_endpoint` | string | `""` |
+| 23 | `api_key` | string | `""` |
+| 24 | `model_name` | string | `"gpt-4o"` |
+| 25 | `detection_prompt` | text | `""` |
+| 26 | `threshold` | float | `0.7` |
+| 27 | `check_porn` | bool | `true` |
+| 28 | `check_sexy` | bool | `true` |
+| 29 | `enabled_groups` | list | `[]` |
+| 30 | `spam_check_enabled` | bool | `true` |
+| 31 | `spam_threshold` | int | `5` |
+| 32 | `spam_time_window` | int | `10` |
+| 33 | `spam_exclude_pure_media` | bool | `false` |
+| 34 | `spam_ban_duration` | int | `600` |
+| 35 | `profanity_check_enabled` | bool | `true` |
+| 36 | `profanity_use_ai` | bool | `true` |
+| 37 | `profanity_detection_prompt` | text | `"你是严格的内容审核助手。请判断以下文本是否包含骂人、侮辱、人身攻击。\n同时评估严重程度 severity，取值...` |
+| 38 | `profanity_ban_duration` | int | `600` |
+| 39 | `profanity_severity_enabled` | bool | `true` |
+| 40 | `profanity_ban_duration_severity` | dict | `{"mild": 180, "medium": 600, "severe": 1800}` |
+| 41 | `political_keywords` | list | `[]` |
+| 42 | `political_ban_duration` | int | `600` |
+| 43 | `profanity_keywords` | list | `["傻逼", "操你妈", "妈的", "他妈的", "草你妈", "艹你妈", "你妈死了", "去你妈的", ...` |
+| 44 | `ad_check_enabled` | bool | `true` |
+| 45 | `ad_ban_duration` | int | `600` |
+| 46 | `ad_keywords` | list | `["加群", "加微信", "加QQ", "联系我", "私聊", "代练", "代打", "刷钻", "刷币",...` |
+| 47 | `link_check_enabled` | bool | `false` |
+| 48 | `link_ban_duration` | int | `600` |
+| 49 | `link_whitelist` | list | `[]` |
+| 50 | `blacklisted_users` | list | `[]` |
+| 51 | `group_promotion_check_enabled` | bool | `true` |
+| 52 | `group_promotion_ban_duration` | int | `600` |
+| 53 | `ban_duration` | int | `600` |
+| 54 | `whitelist_users` | list | `[]` |
+| 55 | `banned_image_files` | file | `[]` |
+| 56 | `admin_bypass` | bool | `true` |
+| 57 | `notify_on_violation` | bool | `true` |
+| 58 | `max_message_history` | int | `50` |
+| 59 | `kick_recall_enabled` | bool | `false` |
+| 60 | `kick_recall_count` | int | `10` |
+| 61 | `voice_check_enabled` | bool | `false` |
+| 62 | `voice_check_provider_id` | string | `""` |
+| 63 | `voice_asr_endpoint` | string | `""` |
+| 64 | `voice_asr_api_key` | string | `""` |
+| 65 | `voice_asr_model` | string | `""` |
+| 66 | `voice_check_timeout` | int | `15` |
 
 ## 4. 数据文件路径与 data_dir 推导
 
@@ -226,8 +230,8 @@ self.reports_path = self.data_dir / "reports.json"   # 举报待处理
 
 ## 5. 校验结论
 
-- `GM_COMMAND_NAMES` 项数：99（#233 新增 `开关公告提示`）
-- AST 解析 `@filter.command` 项数：94（#233 新增 `开关公告提示`）
-- 仅在 GM_COMMAND_NAMES、不在装饰器：['别人昵称', '改群昵称', '群名称', '群昵称', '设置群头像', '设群友昵称', '设群头像']（均为别名，经装饰器别名参数注册）
+- `GM_COMMAND_NAMES` 项数：102（#277 记 99；#278 新增 `清人`、`邀请通过`、`开关二维码撤回` 后为 102）
+- AST 解析 `@filter.command` 项数：97（#277 记 94；#278 新增 `清人`、`邀请通过`、`开关二维码撤回` 后为 97）
+- 仅在 GM_COMMAND_NAMES、不在装饰器：['别人昵称', '改群昵称', '群名称', '群昵称', '设群友昵称']
 - 仅在装饰器、不在 GM_COMMAND_NAMES：['开关链接检测', '重复表情包撤回']
-- 一致：否（差异项均为别名注册方式差异，非缺失命令）
+- 一致：否（差额为上两行的既有差异，#278 未改动）

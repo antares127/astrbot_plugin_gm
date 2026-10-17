@@ -15,6 +15,7 @@ main.py 门面保留同名薄包装委托本服务，既有调用点零改动。
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from astrbot.api.event import AstrMessageEvent
@@ -60,6 +61,24 @@ class StatsService:
         msgs = groups.get(str(group_id), {}).get("messages", {})
         ranked = sorted(msgs.items(), key=lambda kv: kv[1], reverse=True)
         return ranked[:top_n]
+
+    # ===================== 成员最后发言时间（#225 /清人 依据） =====================
+
+    def _record_user_last_active(self, group_id: str, user_id: str):
+        """#225：记录成员最后发言时间（/清人 N 判定依据）。
+
+        仅更新内存，复用发言计数的每 50 条批量落盘节奏（_increment_message_count），
+        避免每条消息写盘。
+        """
+        g = self._runtime.stats.setdefault("groups", {}).setdefault(str(group_id), {})
+        last_active = g.setdefault("last_active", {})
+        last_active[str(user_id)] = int(time.time())
+
+    def get_last_active(self, group_id: str) -> dict:
+        """#225：返回本群成员最后发言时间映射 {user_id: ts}（无记录返回空 dict）。"""
+        groups = self._runtime.stats.get("groups", {})
+        last_active = groups.get(str(group_id), {}).get("last_active", {})
+        return last_active if isinstance(last_active, dict) else {}
 
     def reset_group_stats(self, group_id: str):
         self._runtime.stats.setdefault("groups", {})[str(group_id)] = {"messages": {}}

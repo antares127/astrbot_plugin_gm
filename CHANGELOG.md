@@ -1,3 +1,5 @@
+2.6.0 处理 #276 #265 #241 #237 #225 五则 issue：#276 群标签读取改走 `get_group_tags`（NapCat 扩展接口，/群信息 与 /群标签 不带参数时生效，兼容字符串/dict/`{"tags": [...]}` 三种响应形态，失败回退 get_group_info 的 tags 字段）；#265 移除配置中「违禁图片 MD5 列表」（banned_images）填空式录入项，违禁图统一通过 `/添加违禁图片`（按群覆盖）与 WebUI 上传（banned_image_files）维护；#241 新增第三方邀请入群自动通过——全局配置 `invite_auto_approve`（默认关）+ 按群覆盖指令 `/邀请通过 on|off`，对协议端扩展的「A 邀请/拉 B 入群」事件（sub_type=invite 且 target_id/invited_user_id/invitee_id 指向非机器人）直接同意并通知管理员，黑名单成员仍被拦截，bot 自身被邀请入群不受影响；#237 新增二维码识别自动撤回——全局配置 `qr_code_recall_enabled`（默认关）+ 按群覆盖指令 `/开关二维码撤回 on|off`，图片审核通路额外用视觉模型识别群二维码/小程序码/收款码等，命中仅撤回消息、不禁言（仅 api_type=openai_vision 生效）；#225 新增 `/清人 N`（1-30）——踢出超过 N 天未发言的普通成员，按每条群消息记录的最后发言时间（stats.last_active，随发言计数每 50 条批量落盘）判定，默认仅预览候选、`/清人 N 确认` 才执行踢人，不含群主/管理员/白名单用户，无发言记录按未发言计。同步更新 `_conf_schema.json`、cop/join_review.py、cop/moderation/、cop/stats.py、cop/constants.py（GM_COMMAND_NAMES 99→102）、README 与 docs（interfaces_snapshot 命令 94→97、配置键 65→66）。
+
 0.01 新增已知功能(禁言，踢人，头衔等)
 
 0.02-0.04 修复了已知问题，并添加了一些新功能

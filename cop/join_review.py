@@ -100,6 +100,12 @@ class JoinReviewService:
           甚至误拉黑邀请人；
         - 审核前复核被邀请人/申请人是否已是群成员（管理员直接拉入的场景），
           已入群则跳过审核与通知并清理残留待处理记录。
+
+        #241：新增「第三方邀请入群自动通过」——第三方邀请场景
+        （third_party_invite，A 邀请/拉 B 入群且 B 非 bot 自身）在
+        invite_auto_approve 开启时直接同意，不再走审核与群内提醒；
+        黑名单成员仍被拦截，bot 自己被邀请入群（标准 invite 语义）不受影响。
+        全局配置默认关，按群覆盖指令 /邀请通过 on|off。
         """
         group_id = str(raw.get("group_id"))
         user_id = str(raw.get("user_id"))
@@ -184,6 +190,25 @@ class JoinReviewService:
                 f"{invite_note}"
                 f"验证消息: {comment}\n"
                 f"原因: 黑名单用户",
+                group_id=group_id,
+            )
+            return
+
+        # #241：第三方邀请自动通过（全局配置 invite_auto_approve 默认关，
+        # 按群覆盖指令 /邀请通过 on|off）。开启后此类申请不再走审核与群内提醒，
+        # 直接同意并通知管理员；黑名单成员已在上方被拦截。
+        if third_party_invite and self._store.get_group_setting(group_id, "invite_auto_approve", False):
+            handled = await self._api._handle_group_request(
+                event, flag, True, "第三方邀请自动通过", sub_type=sub_type)
+            yield event.plain_result(
+                f"已自动同意第三方邀请：{inviter_id} 邀请 {applicant_id} 加入本群" if handled else
+                f"自动同意第三方邀请失败（协议端拒绝或接口不可用，详见日志）")
+            if not handled:
+                return
+            await self._api._notify_admins(
+                f"[加群请求] 已自动同意第三方邀请（群 {group_id}）\n"
+                f"邀请人QQ: {inviter_id}\n"
+                f"被邀请人QQ: {applicant_id}",
                 group_id=group_id,
             )
             return

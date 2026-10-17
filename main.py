@@ -1050,6 +1050,88 @@ class GroupAdminPlugin(Star):
             total += recalled
         yield event.plain_result(f"已尝试撤回 {len(qq_list)} 个用户的最近消息，实际撤回 {total} 条（上限 {count} 条/人）")
 
+    # #225: /清人 — 清理 N 天未发言的普通成员（群管/群主；预览 + 确认两步执行）
+    @filter.command("清人", "清理 N 天未发言成员（/清人 天数 [确认]，1-30）")
+    async def purge_inactive_cmd(self, event: AstrMessageEvent):
+        """踢出超过 N 天未发言的普通成员。
+
+        依据 stats 中的成员最后发言时间（last_active，随每条群消息记录，#225）；
+        插件启用前无发言记录的成员视为未发言一并列入候选。默认仅预览，
+        发送 /清人 N 确认 才真正执行踢人；不含群主/管理员/bot/白名单用户。
+        """
+        raw = self._mp._get_raw_message(event)
+        if not raw or not raw.get("group_id"):
+            yield event.plain_result("此指令只能在群聊中使用")
+            return
+        group_id = str(raw.get("group_id"))
+        if not self._perms._is_group_admin_or_owner(raw):
+            yield event.plain_result("只有群管理员或群主可执行此操作")
+            return
+        tail = self._mp._extract_command_tail(self._mp._extract_text(raw), ("清人",))
+        numbers = re.findall(r"\d+", tail or "")
+        if not numbers:
+            yield event.plain_result(
+                "用法：/清人 天数 [确认]（天数 1-30），例如 /清人 4 先预览候选，"
+                "确认后发送 /清人 4 确认 执行")
+            return
+        days = max(1, min(int(numbers[0]), 30))
+        confirm = "确认" in (tail or "")
+        cutoff = int(time.time()) - days * 86400
+        last_active = self._stats.get_last_active(group_id)
+        member_list = await self._api._execute_action(event, "get_group_member_list",
+                                                      group_id=group_id, return_raw=True)
+        members = self._api._normalize_member_list(member_list)
+        if members is None:
+            yield event.plain_result(
+                "获取群成员列表失败（当前 OneBot 实现可能不支持 get_group_member_list），无法清人")
+            return
+        self_id = str(raw.get("self_id", ""))
+        whitelist = [str(x) for x in (self._store.get_group_setting(group_id, "whitelist_users", []) or [])]
+        candidates = []
+        for m in members:
+            uid = str(m.get("user_id", ""))
+            if not uid or uid == self_id:
+                continue
+            # 群主与管理员不参与清理
+            if m.get("role", "") in ("owner", "admin"):
+                continue
+            if uid in whitelist:
+                continue
+            ts = last_active.get(uid)
+            if ts is None or int(ts) < cutoff:
+                name = str(m.get("card") or m.get("nickname") or "未知")
+                candidates.append((uid, name, ts))
+        if not candidates:
+            yield event.plain_result(f"本群没有超过 {days} 天未发言的普通成员")
+            return
+        preview_lines = []
+        for i, (uid, name, ts) in enumerate(candidates[:50]):
+            last_seen = (f"最后发言 {time.strftime('%Y-%m-%d', time.localtime(int(ts)))}"
+                         if ts else "无发言记录")
+            preview_lines.append(f"  {i+1}. {uid}（{name}）{last_seen}")
+        more = f"\n  ...（共 {len(candidates)} 人，仅列出前 50）" if len(candidates) > 50 else ""
+        if not confirm:
+            yield event.plain_result(
+                f"将清理超过 {days} 天未发言的普通成员 {len(candidates)} 人"
+                f"（不含群主/管理员/白名单；无发言记录的成员按未发言计）：\n"
+                + "\n".join(preview_lines) + more
+                + f"\n确认执行请发送：/清人 {days} 确认")
+            return
+        ok_list, bad_list = [], []
+        for uid, _name, _ts in candidates:
+            if await self._api._kick_member(event, group_id, uid):
+                ok_list.append(uid)
+            else:
+                bad_list.append(uid)
+        msg = f"清人完成：踢出 {len(ok_list)} 人"
+        if ok_list:
+            msg += f"（{', '.join(ok_list[:20])}{'…' if len(ok_list) > 20 else ''}）"
+        if bad_list:
+            msg += (f"\n失败 {len(bad_list)} 人（{', '.join(bad_list[:20])}"
+                    f"{'…' if len(bad_list) > 20 else ''}），"
+                    "多为机器人权限不足或目标身份高于机器人")
+        yield event.plain_result(msg)
+
     @filter.command("撤回", "撤回消息（/撤回 + 引用消息 / /撤回 @用户 N / /撤回 N）")
     async def recall_cmd(self, event: AstrMessageEvent):
         """统一分发器（#109 #110 #117 #118，修复 #122）：
@@ -1703,10 +1785,38 @@ class GroupAdminPlugin(Star):
         name = info.get("group_name") or info.get("name") or "未知"
         gid = info.get("group_id") or group_id
         member_count = info.get("member_count") or info.get("member_count") or "?"
-        tags = info.get("tags") or info.get("group_tags") or []
+        # #276：群标签优先走 get_group_tags（NapCat 扩展接口，兼容 str/dict 混合列表）；
+        # 调用失败或为空时回退 get_group_info 响应里的 tags / group_tags 字段
+        tags = self._parse_group_tags_result(
+            await self._api._call_onebot_raw(event, "get_group_tags", group_id=group_id))
+        if not tags:
+            tags = info.get("tags") or info.get("group_tags") or []
         tags_str = ", ".join(str(t) for t in tags) if tags else "无"
         text = f"群名称: {name}\n群号: {gid}\n群标签: {tags_str}\n成员数: {member_count}"
         yield event.plain_result(text)
+
+    def _parse_group_tags_result(self, result) -> list:
+        """#276：解析 get_group_tags 响应中的标签列表。
+
+        兼容 data 为字符串列表 / dict 列表（取 tag/name/title 字段）/
+        {"tags": [...]} 包裹三种形态；响应失败或结构异常返回空列表。
+        """
+        if not isinstance(result, dict) \
+                or not self._api._action_result_success(result):
+            return []
+        data = result.get("data")
+        if isinstance(data, dict):
+            data = data.get("tags") or data.get("group_tags")
+        if not isinstance(data, list):
+            return []
+        tags = []
+        for t in data:
+            if isinstance(t, dict):
+                t = t.get("tag") or t.get("name") or t.get("title") or ""
+            t = str(t).strip()
+            if t and t not in tags:
+                tags.append(t)
+        return tags
 
 # #164: /群相册 — 引用图片消息上传到群相册（群管/群主）
     @filter.command("群相册", "引用图片上传到群相册（/群相册 相册名）")
@@ -1849,7 +1959,7 @@ class GroupAdminPlugin(Star):
             yield event.plain_result(f"已修改群名为「{text}」" if ok else "修改群名失败（当前 OneBot 实现可能不支持此 API，或机器人权限不足）")
 
     # #163: /群标签 — 添加群标签（群管/群主）
-    @filter.command("群标签", "添加群标签（/群标签 标签名）")
+    @filter.command("群标签", "添加群标签（/群标签 标签名）；不带参数查看本群群标签")
     async def set_group_tag_cmd(self, event: AstrMessageEvent):
         raw = self._mp._get_raw_message(event)
         if not raw or not raw.get("group_id"):
@@ -1866,7 +1976,15 @@ class GroupAdminPlugin(Star):
                 text = text[len(prefix):].lstrip()
                 break
         if not text:
-            yield event.plain_result("请提供标签内容，例如 /群标签 编程交流")
+            # #276：不带参数时改为查看本群群标签（get_group_tags，NapCat 扩展接口）
+            tags = self._parse_group_tags_result(
+                await self._api._call_onebot_raw(event, "get_group_tags", group_id=group_id))
+            if tags:
+                yield event.plain_result(f"本群群标签：{', '.join(tags)}")
+                return
+            yield event.plain_result(
+                "查看群标签失败（当前协议端可能不支持 get_group_tags），"
+                "或请提供标签内容进行添加，例如 /群标签 编程交流")
             return
         if len(text) > 20:
             yield event.plain_result("标签过长（最多20字符）")
@@ -2382,6 +2500,20 @@ class GroupAdminPlugin(Star):
         self._store.set_group_override(gid, "dup_face_recall_enabled", enabled)
         yield event.plain_result(f"[成功] 本群重复表情包撤回已{'开启' if enabled else '关闭'}")
 
+    # #241: /邀请通过 — 开关第三方邀请入群自动通过（全局配置 + 按群覆盖）
+    @filter.command("邀请通过", "开关第三方邀请入群自动通过（on/off，按群生效，#241）")
+    async def toggle_invite_auto_approve_cmd(self, event: AstrMessageEvent, value: str = ""):
+        async for r in self._toggle_body(event, value, "invite_auto_approve",
+                                         "第三方邀请入群自动通过"):
+            yield r
+
+    # #237: /开关二维码撤回 — 开关二维码识别自动撤回（全局配置 + 按群覆盖）
+    @filter.command("开关二维码撤回", "开关二维码识别自动撤回（on/off，按群生效，#237）")
+    async def toggle_qr_code_recall_cmd(self, event: AstrMessageEvent, value: str = ""):
+        async for r in self._toggle_body(event, value, "qr_code_recall_enabled",
+                                         "二维码识别自动撤回"):
+            yield r
+
     # ===================== #254 口语化群管指令 =====================
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
@@ -2404,6 +2536,9 @@ class GroupAdminPlugin(Star):
 
         # 发言计数（#29）
         self._stats._increment_message_count(group_id, user_id)
+
+        # #225：记录成员最后发言时间（/清人 N 判定依据），随发言计数批量落盘
+        self._stats._record_user_last_active(group_id, user_id)
 
         # 撤回消息历史：记录该群消息（插件指令消息不记录，避免编号偏移）
         self._history._record_message_to_history(group_id, raw)
