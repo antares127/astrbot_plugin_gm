@@ -197,7 +197,10 @@ class JoinReviewService:
         # #241：第三方邀请自动通过（全局配置 invite_auto_approve 默认关，
         # 按群覆盖指令 /邀请通过 on|off）。开启后此类申请不再走审核与群内提醒，
         # 直接同意并通知管理员；黑名单成员已在上方被拦截。
-        if third_party_invite and self._store.get_group_setting(group_id, "invite_auto_approve", False):
+        # 闸门：仅在本群加群审核启用范围内（enabled）才放行——本群未启用
+        # 违规检测/审核范围（enabled=False）时不自动通过，与 #192 语义一致。
+        if third_party_invite and enabled \
+                and self._store.get_group_setting(group_id, "invite_auto_approve", False):
             handled = await self._api._handle_group_request(
                 event, flag, True, "第三方邀请自动通过", sub_type=sub_type)
             yield event.plain_result(

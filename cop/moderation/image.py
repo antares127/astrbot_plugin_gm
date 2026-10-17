@@ -72,6 +72,9 @@ class ImageModeration:
         if truncated or not image_data:
             return False
         md5 = hashlib.md5(image_data).hexdigest()
+        # #265：schema 已移除 banned_images 填空式录入项，此处全局读取仅为
+        # 兼容老用户 config.json 中的残留数据（仍生效、避免升级后行为漂移）；
+        # 新配置统一通过 /添加违禁图片（按群覆盖）与 WebUI 上传维护。
         global_banned = set(self.config.get("banned_images", []) or [])
         group_banned = set(self._store.get_group_setting(group_id, "banned_images", []) or [])
         banned_md5s = global_banned | group_banned
@@ -210,10 +213,19 @@ class ImageModeration:
             content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content", "")
             if not content:
                 return "none", ""
-            match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
-            if not match:
-                return "none", ""
-            result = json.loads(match.group())
+            # 解析容错：先尝试整体 JSON（模型规范输出），失败再正则提取首个
+            # {...} 片段（模型可能附加说明文字）；均失败按未命中放行（fail-open，
+            # 误放行优于误撤回，失败已记 error 日志）。
+            try:
+                result = json.loads(content)
+            except (json.JSONDecodeError, ValueError):
+                match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
+                if not match:
+                    return "none", ""
+                try:
+                    result = json.loads(match.group())
+                except (json.JSONDecodeError, ValueError):
+                    return "none", ""
             if not bool(result.get("has_qr_code", False)):
                 return "none", ""
             category = str(result.get("category", "plain")).lower().strip()

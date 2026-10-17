@@ -1104,6 +1104,8 @@ class GroupAdminPlugin(Star):
         if not candidates:
             yield event.plain_result(f"本群没有超过 {days} 天未发言的普通成员")
             return
+        # 预览/执行按最后发言时间升序（最久未发言在前），无发言记录排最后
+        candidates.sort(key=lambda x: (x[2] is None, int(x[2] or 0)))
         preview_lines = []
         for i, (uid, name, ts) in enumerate(candidates[:50]):
             last_seen = (f"最后发言 {time.strftime('%Y-%m-%d', time.localtime(int(ts)))}"
@@ -1118,7 +1120,10 @@ class GroupAdminPlugin(Star):
                 + f"\n确认执行请发送：/清人 {days} 确认")
             return
         ok_list, bad_list = [], []
-        for uid, _name, _ts in candidates:
+        for i, (uid, _name, _ts) in enumerate(candidates):
+            # 逐个间隔 0.5s，避免大群批量踢人高频触发协议端限流
+            if i:
+                await asyncio.sleep(0.5)
             if await self._api._kick_member(event, group_id, uid):
                 ok_list.append(uid)
             else:
@@ -1786,12 +1791,18 @@ class GroupAdminPlugin(Star):
         gid = info.get("group_id") or group_id
         member_count = info.get("member_count") or info.get("member_count") or "?"
         # #276：群标签优先走 get_group_tags（NapCat 扩展接口，兼容 str/dict 混合列表）；
-        # 调用失败或为空时回退 get_group_info 响应里的 tags / group_tags 字段
-        tags = self._parse_group_tags_result(
-            await self._api._call_onebot_raw(event, "get_group_tags", group_id=group_id))
+        # 接口失败时回退 get_group_info 响应里的 tags / group_tags 字段；
+        # 接口成功但为空 → 「无」，失败且回退也为空 → 明确提示获取失败
+        tags_raw = await self._api._call_onebot_raw(event, "get_group_tags", group_id=group_id)
+        tags = self._parse_group_tags_result(tags_raw)
         if not tags:
             tags = info.get("tags") or info.get("group_tags") or []
-        tags_str = ", ".join(str(t) for t in tags) if tags else "无"
+        if tags:
+            tags_str = ", ".join(str(t) for t in tags)
+        elif isinstance(tags_raw, dict) and self._api._action_result_success(tags_raw):
+            tags_str = "无"
+        else:
+            tags_str = "获取失败（当前协议端可能不支持 get_group_tags）"
         text = f"群名称: {name}\n群号: {gid}\n群标签: {tags_str}\n成员数: {member_count}"
         yield event.plain_result(text)
 
@@ -1976,11 +1987,16 @@ class GroupAdminPlugin(Star):
                 text = text[len(prefix):].lstrip()
                 break
         if not text:
-            # #276：不带参数时改为查看本群群标签（get_group_tags，NapCat 扩展接口）
-            tags = self._parse_group_tags_result(
-                await self._api._call_onebot_raw(event, "get_group_tags", group_id=group_id))
+            # #276：不带参数时改为查看本群群标签（get_group_tags，NapCat 扩展接口）；
+            # 区分「接口成功但无标签」与「接口失败（协议端不支持）」
+            tags_raw = await self._api._call_onebot_raw(event, "get_group_tags", group_id=group_id)
+            tags = self._parse_group_tags_result(tags_raw)
             if tags:
                 yield event.plain_result(f"本群群标签：{', '.join(tags)}")
+                return
+            if isinstance(tags_raw, dict) and self._api._action_result_success(tags_raw):
+                yield event.plain_result(
+                    "本群暂无群标签；如需添加请发送 /群标签 标签名，例如 /群标签 编程交流")
                 return
             yield event.plain_result(
                 "查看群标签失败（当前协议端可能不支持 get_group_tags），"
