@@ -140,7 +140,7 @@
 - `after_message_sent`
 
 
-**配置键总数：74**
+**配置键总数：73**
 
 
 | # | key | type | default |
@@ -214,11 +214,10 @@
 | 67 | `ad_check_link_content` | bool | `false` |
 | 68 | `link_safety_check_enabled` | bool | `false` |
 | 69 | `link_safety_whitelist` | list | `["douyin.com","bilibili.com"]` |
-| 70 | `link_safety_blacklist` | list | `[]` |
-| 71 | `link_safety_blocked_is_unsafe` | bool | `true` |
-| 72 | `link_safety_ban_duration` | int | `600` |
-| 73 | `link_safety_keywords` | list | 预填黄赌毒常见词 |
-| 74 | `link_fetch_timeout` | int | `5` |
+| 70 | `link_safety_blocked_is_unsafe` | bool | `true` |
+| 71 | `link_safety_ban_duration` | int | `600` |
+| 72 | `link_safety_keywords` | list | 预填黄赌毒常见词 |
+| 73 | `link_fetch_timeout` | int | `5` |
 
 ## 4. 数据文件路径与 data_dir 推导
 

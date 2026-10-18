@@ -444,12 +444,11 @@ class TextModeration:
         判定顺序（前置免抓取，抓取兜底）：
         1. 消息无链接 → 放行
         2. 白名单（link_safety_whitelist + 复用链接白名单 link_whitelist）→ 放行
-        3. link_safety_blacklist 域名命中 → 违规
-        4. 内置黄赌毒域名特征 _UNSAFE_DOMAIN_PATTERNS 命中 → 违规
-        5. link_safety_keywords 与域名匹配 → 违规
-        6. 抓取目标页：被拦截（403/451/超时/重置，返回 None）且
+        3. 内置黄赌毒域名特征 _UNSAFE_DOMAIN_PATTERNS 命中 → 违规
+        4. link_safety_keywords 与域名匹配 → 违规
+        5. 抓取目标页：被拦截（403/451/超时/重置，返回 None）且
            link_safety_blocked_is_unsafe 开 → 违规（连续失败熔断时放行）
-        7. 目标页正文命中 link_safety_keywords → 违规
+        6. 目标页正文命中 link_safety_keywords → 违规
         其余情况放行（抓取失败/无关键词命中不误伤）。
         """
         if not self._store.get_group_setting(group_id, "link_safety_check_enabled", False):
@@ -464,21 +463,17 @@ class TextModeration:
             + list(self._store.get_group_setting(group_id, "link_whitelist", []) or [])
         if self._hosts_hit_domain_list(hosts, wl_entries):
             return False, ""
-        # 3) 域名黑名单（无需访问目标页）
-        blacklist = self._store.get_group_setting(group_id, "link_safety_blacklist", []) or []
-        if self._hosts_hit_domain_list(hosts, blacklist):
-            return True, "域名在不安全网站黑名单"
-        # 4) 内置黄赌毒域名特征
+        # 3) 内置黄赌毒域名特征
         for host in hosts:
             if any(pat in host for pat in _UNSAFE_DOMAIN_PATTERNS):
                 return True, f"域名特征疑似不安全网站（{host}）"
-        # 5) 自定义关键词与域名匹配
+        # 4) 自定义关键词与域名匹配
         kws = [str(k).lower() for k in
                (self._store.get_group_setting(group_id, "link_safety_keywords", []) or []) if str(k)]
         for host in hosts:
             if any(k in host for k in kws):
                 return True, "域名命中不安全网站关键词"
-        # 6)/7) 抓取目标页兜底
+        # 5)/6) 抓取目标页兜底
         blocked_is_unsafe = self._store.get_group_setting(
             group_id, "link_safety_blocked_is_unsafe", True)
         breaker_open = self._link_fetch_fail_streak >= _LINK_FETCH_BREAKER

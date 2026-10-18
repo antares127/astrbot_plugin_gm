@@ -325,7 +325,7 @@
     "link_safety_check_enabled": {
         "description": "不安全网站检测开关（#272，默认关）",
         "type": "bool",
-        "hint": "开启后对群消息中的链接做安全分析：域名黑名单/内置黄赌毒特征/自定义关键词命中，或目标站拦截服务器请求（link_safety_blocked_is_unsafe 开）时，按不安全网站处置（撤回+按 link_safety_ban_duration 禁言）。douyin.com/bilibili.com 等默认白名单不检测。推荐按群覆盖：/开关不安全网站检测 on|off。",
+        "hint": "开启后对群消息中的链接做安全分析：内置黄赌毒特征/自定义关键词命中，或目标站拦截服务器请求（link_safety_blocked_is_unsafe 开）时，按不安全网站处置（撤回+按 link_safety_ban_duration 禁言）。douyin.com/bilibili.com 等默认白名单不检测。推荐按群覆盖：/开关不安全网站检测 on|off。",
         "default": false
     },
     "link_safety_whitelist": {
@@ -335,17 +335,10 @@
         "hint": "这些域名（含子域）不参与不安全网站检测，另复用 link_whitelist。默认预置常见大站，可按需增删：/设置群配置 link_safety_whitelist [域名列表]。",
         "default": ["douyin.com", "bilibili.com"]
     },
-    "link_safety_blacklist": {
-        "description": "不安全网站检测域名黑名单（推荐按群覆盖）",
-        "type": "list",
-        "items": {"type": "string"},
-        "hint": "命中即按不安全网站处置（无需访问目标页）。支持 `*.example.com` 通配子域：/设置群配置 link_safety_blacklist [域名列表]。",
-        "default": []
-    },
     "link_safety_blocked_is_unsafe": {
         "description": "目标站拦截服务器请求时视为不安全（#272）",
         "type": "bool",
-        "hint": "开启后，链接目标页拒绝访问（403/451/超时/连接重置）即视为不安全网站并处置；连续多次抓取失败（疑似服务器断网）时自动熔断放行，抓取恢复后继续生效。关闭则仅凭域名黑名单/特征/页面内容判定。",
+        "hint": "开启后，链接目标页拒绝访问（403/451/超时/连接重置）即视为不安全网站并处置；连续多次抓取失败（疑似服务器断网）时自动熔断放行，抓取恢复后继续生效。关闭则仅凭域名特征/关键词与页面内容判定。",
         "default": true
     },
     "link_safety_ban_duration": {
